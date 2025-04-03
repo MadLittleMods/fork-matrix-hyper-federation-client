@@ -14,13 +14,17 @@ use http::{HeaderValue, Uri};
 use http_body_util::{BodyExt, Full};
 use hyper::body::Body;
 use hyper::{Request, Response};
+use hyper_rustls::ConfigBuilderExt;
+use hyper_rustls::HttpsConnector;
 use hyper_util::client::legacy::connect::Connect;
+use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::client::legacy::Client;
 use hyper_util::rt::TokioExecutor;
 use serde::Serialize;
 use serde_json::value::RawValue;
 use signed_json::signed::Wrap;
 use signed_json::{Canonical, CanonicalWrapper, Signed};
+use tokio_rustls::rustls::ClientConfig;
 
 use crate::server_resolver::{handle_delegated_server, MatrixConnector};
 
@@ -31,21 +35,46 @@ use crate::server_resolver::{handle_delegated_server, MatrixConnector};
 /// Either use [`SigningFederationClient`] if you want requests to be automatically
 /// signed, or [`sign_and_build_json_request`] to sign the requests.
 #[derive(Debug, Clone)]
-pub struct FederationClient {
+pub struct FederationClient<C> {
+    /// Used for making the actual request
     pub client: Client<MatrixConnector, Full<Bytes>>,
+    /// Used for requests made internally like `/.well-known/matrix/server`
+    pub internal_client: Client<C, Full<Bytes>>,
 }
 
-impl FederationClient {
-    pub fn new(client: Client<MatrixConnector, Full<Bytes>>) -> Self {
-        FederationClient { client }
+impl<C> FederationClient<C>
+where
+    C: Connect + Clone + Send + Sync + 'static,
+{
+    pub fn new(
+        client: Client<MatrixConnector, Full<Bytes>>,
+        internal_client: Client<C, Full<Bytes>>,
+    ) -> Self {
+        FederationClient {
+            client,
+            internal_client,
+        }
     }
 
     /// Helper function to build a [`FederationClient`].
-    pub fn new_with_default_resolver() -> Result<FederationClient, Error> {
-        let connector = MatrixConnector::with_default_resolver()?;
+    pub fn new_with_default_resolver(
+    ) -> Result<FederationClient<HttpsConnector<HttpConnector>>, Error> {
+        let matrix_connector = MatrixConnector::with_default_resolver()?;
+
+        let tls_client_config = ClientConfig::builder()
+            .with_native_roots()
+            .unwrap()
+            .with_no_client_auth();
+
+        let https_connector = hyper_rustls::HttpsConnectorBuilder::new()
+            .with_tls_config(tls_client_config)
+            .https_only()
+            .enable_http1()
+            .build();
 
         Ok(FederationClient {
-            client: Client::builder(TokioExecutor::new()).build(connector),
+            client: Client::builder(TokioExecutor::new()).build(matrix_connector),
+            internal_client: Client::builder(TokioExecutor::new()).build(https_connector),
         })
     }
 
@@ -53,7 +82,7 @@ impl FederationClient {
         &self,
         mut req: Request<Full<Bytes>>,
     ) -> Result<Response<hyper::body::Incoming>, Error> {
-        req = handle_delegated_server(&self.client, req).await?;
+        req = handle_delegated_server(&self.internal_client, req).await?;
 
         self.client.request(req).await.map_err(Into::into)
     }
