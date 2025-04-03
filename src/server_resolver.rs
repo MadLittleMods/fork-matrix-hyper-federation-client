@@ -263,6 +263,10 @@ where
     if host.parse::<IpAddr>().is_ok() || port.is_some() {
         debug!("Literals");
     } else {
+        println!(
+            "asdf matrix-hyper-federation-client checking well-known for : {:?}",
+            req.uri().host().context("missing host")?
+        );
         let well_known =
             get_well_known(http_client, req.uri().host().context("missing host")?).await;
 

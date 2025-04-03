@@ -61,6 +61,7 @@ where
         &self,
         mut req: Request<Full<Bytes>>,
     ) -> Result<Response<hyper::body::Incoming>, Error> {
+        println!("asdf matrix-hyper-federation-client saw request: {:?}", req);
         req = handle_delegated_server(&self.client, req).await?;
 
         self.client.request(req).await.map_err(Into::into)
